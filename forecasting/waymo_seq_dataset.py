@@ -146,7 +146,8 @@ class WaymoSequenceDataset(Dataset):
         transform = None,                # torchvision transform applied per frame (PIL -> tensor)
         drop_last: bool = True,          # drop incomplete tails per (segment, camera)
         decode_threads: int = 0,         # reserved for future parallel decode
-        window_overlap: bool = False
+        window_overlap: bool = False,
+        resize_to: Tuple = (384, 640)
     ):
         super().__init__()
         self.root = root
@@ -157,6 +158,7 @@ class WaymoSequenceDataset(Dataset):
         self.drop_last = drop_last
         self.decode_threads = decode_threads
         self.window_overlap = window_overlap
+        self.resize_to = resize_to
 
         # Sensible default: turn PIL -> Tensor in [0,1]
         self.transform = transform or transforms.Compose([
@@ -293,6 +295,8 @@ def waymo_dataloader(
     num_workers: int = 4,
     pin_memory: bool = True,
     shuffle: bool = True,
+    persistent_workers=True,
+    prefetch_factor=4
 ) -> DataLoader:
     ds = WaymoSequenceDataset(
         root=root,
@@ -309,7 +313,9 @@ def waymo_dataloader(
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=True,   # drop partial batch at epoch end
-        collate_fn=collate_views_and_tensor
+        collate_fn=collate_views_and_tensor,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor
     )
 
 # (Optional) A simple Lightning-style DataModule shim
@@ -324,6 +330,8 @@ class WaymoDataModule:
         batch_size: int = 4,
         num_workers: int = 4,
         pin_memory: bool = True,
+        persistent_workers: bool = True,
+        prefatch_factor: int = 4
     ):
         self.root = root
         self.sequence_length = sequence_length
@@ -333,6 +341,8 @@ class WaymoDataModule:
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.persistent_workers = persistent_workers
+        self.prefatch_factor = prefatch_factor
 
     def train_dataloader(self):
         return waymo_dataloader(
@@ -345,6 +355,8 @@ class WaymoDataModule:
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             shuffle=True,
+            persistent_workers=self.persistent_workers,
+            prefetch_factor=self.prefatch_factor
         )
 
     def val_dataloader(self):
@@ -358,6 +370,8 @@ class WaymoDataModule:
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             shuffle=False,
+            persistent_workers=self.persistent_workers,
+            prefetch_factor=self.prefatch_factor
         )
 
     def test_dataloader(self):
@@ -371,4 +385,6 @@ class WaymoDataModule:
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             shuffle=False,
+            persistent_workers=self.persistent_workers,
+            prefetch_factor=self.prefatch_factor
         )
