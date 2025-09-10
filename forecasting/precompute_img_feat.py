@@ -173,7 +173,7 @@ if __name__ == "__main__":
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
     # Build CUT3R and go
-    from cut3r.src.dust3r.model import ARCroco3DStereo
+    from dust3r.model import ARCroco3DStereo
     cut3r = ARCroco3DStereo.from_pretrained(CUT3R_WEIGHTS)
     precompute_cut3r_features_distributed(
         cut3r=cut3r,
