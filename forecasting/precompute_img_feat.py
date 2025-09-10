@@ -96,9 +96,14 @@ def precompute_cut3r_features_distributed(
     processed_local = 0
     skipped_local = 0
 
+    if rank == 0:
+        print("Batch loop is starting")
+
     for batch in dl:
-        views = batch["views"]
+        views = batch["views"] # List with one view element
         uids  = batch["uids"]
+
+        print(f" \n {views} \n")
 
         # Fast resume: drop items that already exist on disk
         if skip_existing:
@@ -123,6 +128,9 @@ def precompute_cut3r_features_distributed(
 
         with torch.inference_mode(), torch.cuda.amp.autocast(enabled=amp and device.type == "cuda"):
             (img_feats, _, _), _ = cut3r._forward_encoder(views=views)   # [B, C, H, W]
+
+        if rank==0:
+            print(f"Processed on this rank: {processed_local}")
 
         img_feats = img_feats.half().cpu().contiguous()  # fp16 saves space and IO
 
@@ -159,7 +167,7 @@ if __name__ == "__main__":
     from pathlib import Path
 
     # Change this if your weights live elsewhere
-    CUT3R_WEIGHTS = "cut3r/src/cut3r_512_dpt_4_64.pth"
+    CUT3R_WEIGHTS = "/home/leonjonathan/cut3r-forecasting/cut3r/src/cut3r_512_dpt_4_64.pth"
 
     parser = argparse.ArgumentParser("Precompute CUT3R features (multi-GPU via torchrun)")
     parser.add_argument("--data-root", required=True, help="Waymo root dir")
@@ -173,6 +181,9 @@ if __name__ == "__main__":
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
     # Build CUT3R and go
+    from pathlib import Path
+    import sys
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "cut3r" / "src"))
     from dust3r.model import ARCroco3DStereo
     cut3r = ARCroco3DStereo.from_pretrained(CUT3R_WEIGHTS)
     precompute_cut3r_features_distributed(
@@ -184,6 +195,6 @@ if __name__ == "__main__":
         num_workers=args.workers,
         resize_to=(384, 640),   # edit here if you need a different HxW
         amp=True,               # on by default; edit to False if you must
-        channels_last=True,     # usually faster for conv nets
+        channels_last=False,     # usually faster for conv nets
         skip_existing=True,     # resume-friendly; delete files to recompute
     )

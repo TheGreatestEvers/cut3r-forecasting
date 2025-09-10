@@ -32,11 +32,16 @@ def _to_cam_str(s: pd.Series) -> pd.Series:
     return s.map(CAMERA_MAP) if pd.api.types.is_integer_dtype(s) else s.astype(str)
 
 def _decode_rgb(img_bytes, resize_to=None) -> torch.Tensor:
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    if resize_to is not None:
-        img = img.resize((resize_to[1], resize_to[0]), Image.BILINEAR)  # (H,W)
-    arr = np.asarray(img, dtype=np.uint8)  # H W 3
-    t = torch.from_numpy(arr).permute(2,0,1).float().div_(255.0)        # 3 H W
+    with Image.open(io.BytesIO(img_bytes)) as im:
+        im = im.convert("RGB")
+        if resize_to is not None:
+            # If you're on Pillow>=10, prefer: Image.Resampling.BILINEAR
+            im = im.resize((resize_to[1], resize_to[0]), Image.BILINEAR)
+
+        # Make a writable, C-contiguous array
+        arr = np.array(im, dtype=np.uint8, copy=True)
+
+    t = torch.from_numpy(arr).permute(2, 0, 1).to(dtype=torch.float32).div_(255.0)
     return t  # [3,H,W]
 
 class WaymoFrameDataset(Dataset):
@@ -59,9 +64,13 @@ class WaymoFrameDataset(Dataset):
             if self.camera_name is not None:
                 df = df[df["_cam"] == self.camera_name]
             df = df.dropna(subset=[COL_SEG, COL_TS])
-            for rid, row in df[[COL_SEG, "_cam", COL_TS]].reset_index().itertuples(index=False):
-                self.index.append((fi, rid))
-                self.meta.append((row[0], row[1], int(row[2])))
+
+            # Bring original row ids into a column, then unpack directly
+            for rid, seg, cam, ts in df[[COL_SEG, "_cam", COL_TS]] \
+                                    .reset_index() \
+                                    .itertuples(index=False, name=None):
+                self.index.append((fi, int(rid)))        # row id in the parquet file
+                self.meta.append((seg, cam, int(ts)))    # seg|cam|ts
 
     def __len__(self): return len(self.index)
 
@@ -77,11 +86,33 @@ class WaymoFrameDataset(Dataset):
         tbl = pq.read_table(path, columns=[COL_IMG, COL_SEG, COL_CAM, COL_TS], memory_map=True)
         row = tbl.take(pa.array([rid])).to_pandas().iloc[0]
         img = _decode_rgb(row[COL_IMG], resize_to=self.resize_to)  # [3,H,W]
+        #view = {
+        #    "img": img.unsqueeze(0),        # [1,3,H,W] to match CUT3R's expected shape
+        #    "camera_pose": torch.eye(4).unsqueeze(0),  # if unused by encoder, keep dummy
+        #    "idx": 0, "instance": self.uid_at(i),
+        #}
         view = {
-            "img": img.unsqueeze(0),        # [1,3,H,W] to match CUT3R's expected shape
-            "camera_pose": torch.eye(4).unsqueeze(0),  # if unused by encoder, keep dummy
-            "idx": 0, "instance": self.uid_at(i),
-        }
+                "img": img,
+                "ray_map": torch.full(
+                    (
+                        img.shape[0],
+                        6,
+                        img.shape[-2],
+                        img.shape[-1],
+                    ),
+                    torch.nan,
+                ),
+                "true_shape": 2,
+                "idx": 1,
+                "instance": str(1),
+                "camera_pose": torch.from_numpy(np.eye(4, dtype=np.float32)).unsqueeze(
+                    0
+                ),
+                "img_mask": torch.tensor(True).unsqueeze(0),
+                "ray_mask": torch.tensor(False).unsqueeze(0),
+                "update": torch.tensor(True).unsqueeze(0),
+                "reset": torch.tensor(False).unsqueeze(0),
+            }
         return {"view": view, "uid": self.uid_at(i)}
 
 def collate_views(batch):
