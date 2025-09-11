@@ -1,0 +1,49 @@
+version: "3.8"
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Forward proxy vars from your shell / .env into the build
+      args:
+        - HTTP_PROXY
+        - HTTPS_PROXY
+        - NO_PROXY
+        - http_proxy
+        - https_proxy
+        - no_proxy
+    image: yourname/ml-dev:cuda11.4
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:cached
+      - conda_root:/opt/conda
+    # Forward proxy vars at runtime as well (no values shown here; taken from env)
+    environment:
+      - HTTP_PROXY
+      - HTTPS_PROXY
+      - NO_PROXY
+      - http_proxy
+      - https_proxy
+      - no_proxy
+      - PYTHONUNBUFFERED=1
+    # GPU access — pick ONE of the following depending on your setup:
+    # 1) Compose v2 (non-Swarm):
+    # gpus: all
+    #
+    # 2) Swarm/Compose with deploy section:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Expose Jupyter if you need it
+    ports:
+      - "8888:8888"
+    # For older Docker requiring explicit runtime (deprecated in newer versions):
+    # runtime: nvidia
+
+volumes:
+  conda_root:
