@@ -1,47 +1,59 @@
-# CUDA 11.4 + cuDNN runtime (pairs safely with a driver that reports CUDA 11.4)
-FROM nvidia/cuda:11.4.3-cudnn8-runtime-ubuntu20.04
+# CUDA 11.4 on Ubuntu 20.04
+FROM pytorch/pytorch:2.5.1-cuda11.8-cudnn9-devel
 
-# ---------- Build-time proxy args (do NOT persist) ----------
-# These are available during `RUN` steps but are NOT kept in the final image.
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ARG http_proxy
-ARG https_proxy
-ARG no_proxy
 
-# Base deps + tini for signal handling
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    bash ca-certificates curl bzip2 git tini locales && \
-    locale-gen en_US.UTF-8 && \
-    rm -rf /var/lib/apt/lists/*
 
-ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+ARG DEBIAN_FRONTEND=noninteractive
 
-# Create a non-root user
-ARG USERNAME=dev
-ARG UID=1000
-ARG GID=1000
-RUN groupadd -g ${GID} ${USERNAME} && \
-    useradd -m -s /bin/bash -u ${UID} -g ${GID} ${USERNAME}
+# ---- base OS deps ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl bzip2 ca-certificates bash git build-essential ccache cmake \
+      libgl1 libglib2.0-0 \
+  && rm -rf /var/lib/apt/lists/*
 
-# Micromamba (drop-in conda replacement)
-ENV MAMBA_ROOT_PREFIX=/opt/conda
-RUN curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest \
-    | tar -xvj -C /usr/local/bin/ --strip-components=1 bin/micromamba
+# helpful for faster rebuilds of CUDA/C++
+ENV CCACHE_DIR=/root/.ccache
+RUN ccache --max-size=10G || true
 
-# Make micromamba available in every shell and auto-activate last-used env if you want
-RUN echo 'eval "$(micromamba shell hook -s bash)"' >> /etc/bash.bashrc
+# ---- micromamba (as you had) ----
+ENV MAMBA_ROOT_PREFIX=/opt/micromamba
+RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
+  | tar -xj -C /usr/local/bin --strip-components=1 bin/micromamba
 
-# Work in your repo
+# ---- Python deps ----
+# tip: the base already includes torch; avoid pinning torch in requirements.txt to prevent conflicts
+COPY cut3r/requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install -r /tmp/requirements.txt \
+ && rm /tmp/requirements.txt
+
+# if you really need this via conda/mamba, keep it; otherwise consider using pip-only to simplify
+RUN micromamba install -y 'llvm-openmp<16'
+RUN pip install evo open3d
+
+# (Optional) enable shell hook for interactive activation if you want it
+RUN micromamba shell init -s bash -r "$MAMBA_ROOT_PREFIX"
+
+# ---- copy source and build CUDA extension in-place ----
+# (Adjust CUDA archs for your machines; +PTX gives a forward-compat PTX fallback.)
+ARG TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9+PTX"
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
+ENV CUDA_HOME=/usr/local/cuda
+
+# copy the whole project so the in-place build can emit .so next to sources
 WORKDIR /workspace
-# (We’ll mount the repo at runtime; copying is optional.)
-# COPY . .
+COPY cut3r /workspace/cut3r
 
-# Persist conda envs/caches via a named volume
-VOLUME ["/opt/conda"]
+# run the repo's in-place build where setup.py lives
+# (you had this path commented; leaving it explicit keeps cache-friendly layers.)
+WORKDIR /workspace/cut3r/src/croco/models/curope
+RUN python setup.py build_ext --inplace
+WORKDIR /workspace
 
-# Proper init + non-root
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/bin/bash"]
-USER ${USERNAME}
+ENV PYTHONPATH=/workspace/cut3r/src:${PYTHONPATH}
+
+# Use bash for subsequent RUNs
+SHELL ["/bin/bash", "-lc"]
+
+# Default to an interactive shell
+CMD ["bash"]
